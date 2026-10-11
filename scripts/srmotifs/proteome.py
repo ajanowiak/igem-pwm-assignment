@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from srmotifs import files
+from srmotifs.constants import DATA_RAW, ROOT
 
 # what gffread reports as the gene id of a transcript that has no parent gene
 NO_GENE = {"", "."}
@@ -16,11 +17,11 @@ NO_GENE = {"", "."}
 def input_path(value, label):
     """A URL is fetched once into data/raw/targets/<label>/; a local path is used as given."""
     if value.startswith(("http://", "https://", "ftp://")):
-        return files.fetch(value, files.DATA_RAW / "targets" / label / Path(value).name)
+        return files.fetch(value, DATA_RAW / "targets" / label / Path(value).name)
 
     path = Path(value).expanduser()
     if not path.is_absolute():
-        path = files.ROOT / path
+        path = ROOT / path
     if not path.is_file():
         raise FileNotFoundError(f"input not found: {path}")
     return path

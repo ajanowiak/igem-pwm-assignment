@@ -20,11 +20,9 @@ from pathlib import Path
 import pandas as pd
 from Bio.Align import substitution_matrices
 
-PREDICT_SIMILARITY_CUT = "def SeqDictIterator_XoverY"
+from srmotifs.constants import SR_HSIM, SR_NO_THRESHOLD_MODEL, TIER_BELOW, TIER_NONE, TIER_PASS
 
-TIER_PASS = "pass"
-TIER_BELOW = "below-threshold"
-TIER_NONE = "none"
+PREDICT_SIMILARITY_CUT = "def SeqDictIterator_XoverY"
 
 
 def extract(tarball, dest):
@@ -87,7 +85,7 @@ def family_models(sr_root, families):
         path = Path(sr_root) / "SRModels" / f"{row['sr_model']}.json"
 
         # a family-specific model must really be for this family
-        if row["sr_model"] != "NO_THRESHOLD":
+        if row["sr_model"] != SR_NO_THRESHOLD_MODEL:
             if json.loads(path.read_text())["Family_Name"] != row["Family_Name"]:
                 raise ValueError(f"{path.name} is not family {row['Family_Name']}")
 
@@ -130,7 +128,7 @@ def decide(scores, motifs):
         return TIER_NONE, "no reference TF in family", None, None
 
     ranked = scores.sort_values(["sr_score", "pct_id", "reference_tf"], ascending=[False, False, True])
-    hsim = ranked["sr_class"] == "HSim"
+    hsim = ranked["sr_class"] == SR_HSIM
     with_pwm = ranked[hsim & ranked["reference_tf"].isin(motifs)]
 
     if len(with_pwm):

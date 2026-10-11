@@ -1,16 +1,19 @@
-"""Project paths, configs, write-once downloads into data/raw, and provenance records."""
+"""Configs, output folders, write-once downloads into data/raw, and provenance records."""
 
 import datetime
 import hashlib
 import json
+import logging
 import subprocess
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_RAW = ROOT / "data" / "raw"
-LEDGER = DATA_RAW / "SOURCES.tsv"
+from srmotifs.constants import (CONFIG_DIR, DATA_RAW, LEDGER, REFERENCE_CONFIG, REFERENCE_ROOT,
+                                RESULTS_ROOT, ROOT)
+
 LEDGER_FIELDS = ["path", "source", "retrieved_utc", "bytes", "sha256"]
+
+logger = logging.getLogger(__name__)
 
 
 class FetchError(RuntimeError):
@@ -21,19 +24,23 @@ def load_toml(path):
     """Read a TOML config; a bare file name is looked up in config/."""
     path = Path(path)
     if not path.is_absolute() and not path.exists():
-        path = ROOT / "config" / path
+        path = CONFIG_DIR / path
 
     with open(path, "rb") as handle:
         return tomllib.load(handle)
 
 
 def reference_config():
-    return load_toml(ROOT / "config" / "reference.toml")
+    return load_toml(REFERENCE_CONFIG)
 
 
 def reference_dir(config):
     name = f"cisbp_{config['cisbp']['build']}_pfam_{config['pfam']['release']}"
-    return ROOT / "reference" / name
+    return REFERENCE_ROOT / name
+
+
+def results_dir(label):
+    return RESULTS_ROOT / label
 
 
 def sha256(path):
@@ -118,15 +125,18 @@ def fetch(url, dest):
     """Fetch `url` into data/raw once; later calls only check the recorded hash."""
     dest = Path(dest)
     if is_recorded(dest):
+        logger.info(f"already in data/raw, hash checked: {dest.relative_to(DATA_RAW)}")
         return dest
 
     # download under a temporary name, so an interrupted download never looks finished
+    logger.info(f"downloading {url}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_name(dest.name + ".part")
     curl(url, partial)
     partial.rename(dest)
 
     record(dest, url)
+    logger.info(f"recorded {dest.relative_to(DATA_RAW)} in {LEDGER.name}")
     return dest
 
 

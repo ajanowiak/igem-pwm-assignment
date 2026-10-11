@@ -1,6 +1,8 @@
-"""Step A: download CisBP, Pfam and SR, and build the reference SR searches against.
+"""Download CisBP, Pfam and SR, and build the reference that target TFs are scored against.
 
-Usage: python build_reference.py
+Usage: python scripts/build_reference.py [--log_path logs/build_reference.log]
+
+Runs once; every target organism shares the result.
 
 Downloads (write-once, SHA-256 recorded in data/raw/SOURCES.tsv): CisBP's TF table,
 PWMs and protein sequences; Pfam-A HMMs of the pinned release; SR at a pinned commit.
@@ -15,33 +17,38 @@ Writes reference/cisbp_<build>_pfam_<release>/:
   dbd_models.hmm   the Pfam models of CisBP's DBD types (pressed), and dbd_models.tsv
                    saying which of them call TFs
   sr/              the extracted SR code and family models
+  proteins.fasta   the chosen isoform of each reference TF
   provenance.json
 
 Isoform choice for each reference: see srmotifs/reference.py.
 """
 
+import argparse
 import gzip
 import json
+import logging
 
 import pandas as pd
 
 from srmotifs import cisbp, files, hmmer, meme, reference, sr
+from srmotifs.constants import (DATA_RAW, DBD_MODELS_HMM, DBD_MODELS_TSV, FAMILIES_TSV, LOGS_DIR,
+                                MOTIF_SOURCE_COLUMNS, MOTIFS_MEME, REFERENCES_TSV, SR_DIR,
+                                SR_NO_THRESHOLD_MODEL)
+from srmotifs.log import configure_logging
 
-# where each PWM comes from (experiment, study), copied from CisBP's TF table into references.tsv
-MOTIF_COLUMNS = {"motif_experiment": "MSource_Type", "motif_study": "MSource_Author",
-                 "motif_year": "MSource_Year", "motif_pmid": "PMID"}
+logger = logging.getLogger(__name__)
 
 
 def fetch_all(config):
     """Download everything the reference needs; return the paths and the TF table."""
     tf_zip, pwm_zip = cisbp.fetch_tables(config)
 
-    pfam_dest = files.DATA_RAW / f"pfam_{config['pfam']['release']}" / "Pfam-A.hmm.gz"
+    pfam_dest = DATA_RAW / f"pfam_{config['pfam']['release']}" / "Pfam-A.hmm.gz"
     pfam = files.fetch(config["pfam"]["hmm_url"], pfam_dest)
 
     commit = config["similarity_regression"]["commit"]
     sr_url = config["similarity_regression"]["tarball_url"].format(commit=commit)
-    sr_tarball = files.fetch(sr_url, files.DATA_RAW / f"SimilarityRegression_{commit[:7]}.tar.gz")
+    sr_tarball = files.fetch(sr_url, DATA_RAW / f"SimilarityRegression_{commit[:7]}.tar.gz")
 
     # protein sequences for the references, and for the TFs the SR check scores
     tf_table = cisbp.load_tf_table(tf_zip)
@@ -61,7 +68,7 @@ def pfam_names(pfam_hmm_gz):
 def dbd_model_table(config, tf_table, families, pfam, out):
     """Build the DBD HMM library; return (models, table of DBD types saying which call TFs)."""
     names = {dbd for dbds in families["DBDs"] for dbd in dbds.split(",")}
-    models = hmmer.build_library(pfam, names & pfam_names(pfam), out / "dbd_models.hmm")
+    models = hmmer.build_library(pfam, names & pfam_names(pfam), out / DBD_MODELS_HMM)
     species, calling = cisbp.calling_dbd_types(tf_table, config["rules"]["min_cisbp_species"])
 
     rows = []
@@ -79,11 +86,19 @@ def family_table(families, models, sr_root):
     Follows CisBP's SR_Model / SR_NoThreshold columns, and asserts that each positional
     SR model's weight vector spans exactly the match states of the family's DBD models.
     """
+    # a target TF's family is looked up by its set of DBD types, whatever their listed
+    # order, so no two families may share one set
+    dbd_sets = families["DBDs"].str.split(",").map(frozenset)
+    shared = families[dbd_sets.duplicated(keep=False)]
+    if len(shared):
+        pairs = (shared["Family_Name"] + " (" + shared["DBDs"] + ")").tolist()
+        raise ValueError(f"families with the same set of DBD types: {pairs}")
+
     rows = []
     for family_id, row in families.iterrows():
         # which SR model file CisBP uses for this family
         if row["SR_NoThreshold"] == "True":
-            model_name = "NO_THRESHOLD"
+            model_name = SR_NO_THRESHOLD_MODEL
         else:
             model_name = f"{family_id.split('_')[0]}_1.97d"
         path = sr_root / "SRModels" / f"{model_name}.json"
@@ -111,63 +126,72 @@ def add_motifs(references, tf_table, motif_of):
     references.insert(5, "motif_id", references["TF_ID"].map(motif_of).fillna(""))
 
     measured = tf_table[tf_table["TF_Status"] == "D"].drop_duplicates("Motif_ID").set_index("Motif_ID")
-    for column, source in MOTIF_COLUMNS.items():
+    for column, source in MOTIF_SOURCE_COLUMNS.items():
         references[column] = references["motif_id"].map(measured[source]).fillna("")
     return references
 
 
 def report(references, dbd_table, missing, config, out):
     usable = references[references["segments"] != ""]
-    print(f"reference TFs: {len(references)}; with SR segments: {len(usable)}; "
-          f"with segments and a motif: {(usable['motif_id'] != '').sum()}")
+    logger.info(f"reference TFs: {len(references)}; with SR segments: {len(usable)}; "
+                f"with segments and a motif: {(usable['motif_id'] != '').sum()}")
 
     reasons = references.loc[references["segments"] == "", "outcome"]
     reasons = reasons.str.replace(r" \(.*", "", regex=True).str.replace(r"types .*", "types of its family", regex=True)
-    print("without segments:", reasons.value_counts().to_dict())
+    logger.info(f"without segments: {reasons.value_counts().to_dict()}")
 
     not_calling = dbd_table.loc[dbd_table["in_pfam"] & ~dbd_table["calls_tfs"], "model"].tolist()
     not_in_pfam = dbd_table.loc[~dbd_table["in_pfam"], "model"].tolist()
-    print(f"motifs: {meme.validate(out / 'motifs.meme')}; DBD models: {int(dbd_table['in_pfam'].sum())}, "
-          f"calling TFs: {int(dbd_table['calls_tfs'].sum())}; not calling: {not_calling}; "
-          f"CisBP DBD types not in Pfam {config['pfam']['release']}: {not_in_pfam}")
-    print("CisBP lists no protein for:", {name: len(ids) for name, ids in missing.items()})
+    logger.info(f"motifs: {meme.validate(out / MOTIFS_MEME)}; DBD models: {int(dbd_table['in_pfam'].sum())}, "
+                f"calling TFs: {int(dbd_table['calls_tfs'].sum())}; not calling: {not_calling}; "
+                f"CisBP DBD types not in Pfam {config['pfam']['release']}: {not_in_pfam}")
+
+    missing_counts = {name: len(ids) for name, ids in missing.items()}
+    logger.info(f"CisBP lists no protein for: {missing_counts}")
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--log_path", default=LOGS_DIR / "build_reference.log")
+    args = parser.parse_args()
+    configure_logging(args.log_path)
+
     config = files.reference_config()
     out = files.reference_dir(config)
     out.mkdir(parents=True, exist_ok=True)
+    logger.info(f"building the reference in {out}")
 
     # downloading CisBP, Pfam and SR
     tf_table, pwm_zip, pfam, sr_tarball, missing = fetch_all(config)
-    sr_root = sr.extract(sr_tarball, out / "sr")
+    sr_root = sr.extract(sr_tarball, out / SR_DIR)
 
     # DBD models, and which SR model each family uses
     families = cisbp.families(tf_table)
     models, dbd_table = dbd_model_table(config, tf_table, families, pfam, out)
-    dbd_table.to_csv(out / "dbd_models.tsv", sep="\t", index=False)
-    family_table(families, models, sr_root).to_csv(out / "families.tsv", sep="\t")
+    dbd_table.to_csv(out / DBD_MODELS_TSV, sep="\t", index=False)
+    family_table(families, models, sr_root).to_csv(out / FAMILIES_TSV, sep="\t")
 
     # one isoform and its SR segments per reference TF
+    logger.info("choosing one isoform per reference TF and cutting its SR segments")
     references, sequences = reference.resolve_tfs(
         cisbp.reference_tfs(tf_table), cisbp.load_proteins(config), families,
-        out / "dbd_models.hmm", models, config["rules"]["segment_max_i_evalue"])
+        out / DBD_MODELS_HMM, models, config["rules"]["segment_max_i_evalue"])
 
     # the one PWM copied from each reference TF
     matrices = cisbp.load_matrices(pwm_zip)
     references = add_motifs(references, tf_table, cisbp.representative_motifs(tf_table, set(matrices)))
 
     # writing the reference
-    references.to_csv(out / "references.tsv", sep="\t", index=False)
+    references.to_csv(out / REFERENCES_TSV, sep="\t", index=False)
     (out / "proteins.fasta").write_text("".join(f">{tf}\n{seq}\n" for tf, seq in sorted(sequences.items())))
 
     names = references.drop_duplicates("motif_id").set_index("motif_id")["TF_Name"]
     blocks = {motif_id: meme.block(motif_id, names[motif_id], matrices[motif_id])
               for motif_id in names.index if motif_id}
-    meme.write(out / "motifs.meme", blocks)
+    meme.write(out / MOTIFS_MEME, blocks)
 
     # the reference depends on every downloaded file except target organisms' inputs
-    raw_files = [files.DATA_RAW / path for path in files.read_ledger() if not path.startswith("targets/")]
+    raw_files = [DATA_RAW / path for path in files.read_ledger() if not path.startswith("targets/")]
     files.write_provenance(out, raw_files,
                            cisbp_tfs_without_protein={name: sorted(ids) for name, ids in missing.items()})
 

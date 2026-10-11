@@ -1,182 +1,361 @@
-# cisbp-sr-motifs
+# igem-pwm-assignment
 
-Give the transcription factors (TFs) of any proteome a DNA-binding PWM, using CisBP's own
-method: **Similarity Regression** (SR; Lambert et al. 2019) against **CisBP build 3.10**.
-The output is one MEME file of PWMs, ready for FIMO, and a table saying for every TF
-whether it got a PWM, from which lab-measured TF, and with what score.
+Inference of transcription factor DNA-binding specificities for eukaryotic proteomes,
+using Similarity Regression and the reference data of the CisBP database.
 
-**A PWM given to a TF here is a prediction of binding from protein similarity, not
-evidence of binding.** A TF whose DNA-binding domain is not similar enough to any
-lab-measured TF gets no PWM; nothing is forced.
+## Overview
 
-## Words used here
+igem-pwm-assignment identifies the transcription factors (TFs) encoded in a eukaryotic
+proteome and infers a DNA-binding motif for each TF whose DNA-binding domains (DBDs)
+are sufficiently similar to those of a TF with an experimentally determined motif. The
+inference follows the procedure CisBP applies to its own catalogue: Similarity
+Regression (SR) scoring, the family-specific SR models and the family-specific cutoffs
+are taken unchanged from CisBP build 3.10 and the published SR implementation.
 
-| word | meaning |
-|---|---|
-| PWM | a position weight matrix: the DNA-binding preference of a TF. CisBP calls these "motifs" and gives each an id like `M01613_3.10`; file and column names here (`motifs.meme`, `motif_id`) follow CisBP |
-| DBD | DNA-binding domain, the part of a TF that contacts DNA (homeobox, zinc finger, ...) |
-| family | CisBP's TF family, defined by which DBD types a protein has (one homeobox: Homeodomain) |
-| reference TF | a TF in CisBP (any species) with at least one PWM measured in a lab experiment; the only TFs PWMs are copied from |
-| target TF | a TF of the organism being analysed, which gets its PWM copied from a reference TF |
-| SR score | how similar two DBDs of one family are, as SR's family model scores them |
-| cutoff | CisBP's SR score threshold for a family; at or above it, two DBDs count as "highly similar" (SR's HSim) |
-| margin | SR score minus cutoff; the further above 0, the more trustworthy the copied PWM |
+The input is either a genome assembly with a GFF3 gene annotation or a protein FASTA
+file. The output consists of (i) a motif file in
+[MEME format](https://meme-suite.org/meme/doc/meme-format.html) and (ii) a table
+reporting, for each TF, the inferred motif, the reference TF from which it was
+transferred, the SR score and its margin above the family cutoff.
 
-## How it works
+The software was developed as an iGEM software project for the filamentous fungus
+*Trichoderma atroviride* strain P1. The method is not specific to fungi.
 
+> Inferred motifs are predictions based on DBD sequence similarity; they do not
+> constitute experimental evidence of binding. TFs without a sufficiently similar
+> reference TF are not assigned a motif.
+
+## Contents
+
+- [Motivation](#motivation)
+- [Background](#background)
+- [Workflow](#workflow)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuring a new organism](#configuring-a-new-organism)
+- [Outputs](#outputs)
+- [Interpretation](#interpretation)
+- [Validation](#validation)
+- [Known limitations](#known-limitations)
+- [Repository layout](#repository-layout)
+- [References](#references)
+- [License](#license)
+
+## Motivation
+
+Genome-wide prediction of TF binding sites requires the DNA-binding specificity of each
+TF, usually represented as a position weight matrix (PWM, referred to here as a motif).
+Experimentally determined motifs are available for only a few thousand TFs,
+concentrated in a small number of model organisms. CisBP extends this coverage by
+transferring experimentally determined motifs to TFs with highly similar DBDs, and
+provides such inferences for 741 species.
+
+These precomputed inferences are tied to the gene models and identifiers used by
+CisBP. For *T. atroviride*, CisBP lists TFs under the JGI draft annotation
+(`TRIATDRAFT_*` identifiers), which cannot be mapped directly onto the RefSeq
+annotation of strain P1 (`TrAtP1_*` identifiers). The same limitation applies to any
+newly sequenced strain or re-annotated genome. igem-pwm-assignment repeats CisBP's
+inference on a supplied proteome with CisBP's own reference data, models and cutoffs,
+so that the results remain directly comparable to those of CisBP.
+
+## Background
+
+**DNA-binding specificity.** TFs recognise DNA through one or more DBDs, such as the
+homeodomain or the C2H2 zinc finger. The sequence preference of a TF is commonly
+represented as a PWM, which gives the probability of each nucleotide at each position
+of the binding site. TFs with highly similar DBDs generally have highly similar
+specificities ([Weirauch et al. 2014](https://doi.org/10.1016/j.cell.2014.08.009)),
+which is the basis for transferring motifs between related TFs.
+
+**CisBP** ([cisbp.ccbr.utoronto.ca](https://cisbp.ccbr.utoronto.ca/), Catalog of
+Inferred Sequence Binding Preferences) is a curated database of TF motifs. Build 3.10,
+used here, contains approximately 392,000 TFs from 741 species, of which 4,989 have at
+least one directly determined motif (e.g. from protein-binding microarrays or
+HT-SELEX). For the remaining TFs, CisBP either reports an inferred motif or records that
+no inference is possible. TFs are grouped into families according to their DBD
+composition, and each family is assigned a similarity cutoff for motif inference.
+
+**Similarity Regression** ([Lambert et al. 2019](https://doi.org/10.1038/s41588-019-0411-1);
+implementation: [github.com/smlmbrt/SimilarityRegression](https://github.com/smlmbrt/SimilarityRegression))
+is the method CisBP uses for motif inference. For each DBD family, SR fits a linear model
+on pairs of TFs with experimentally determined motifs, learning one weight per match
+state of the family's Pfam domain model that reflects the contribution of that position
+to binding specificity. The SR score of two DBDs is thus a position-weighted sequence
+identity (or BLOSUM62 similarity, depending on the family model). Pairs scoring at or above the family cutoff are classified as highly similar
+(HSim); the cutoffs were selected to give at least 75% precision on held-out data. A TF
+is assigned the motif of the highest-scoring HSim reference TF.
+
+**Pfam and HMMER.** DBDs are detected with [HMMER](http://hmmer.org/)
+([Eddy 2011](https://doi.org/10.1371/journal.pcbi.1002195)) and the profile hidden
+Markov models of [Pfam](https://www.ebi.ac.uk/interpro/entry/pfam/)
+([Mistry et al. 2021](https://doi.org/10.1093/nar/gkaa913)). Because SR weights are
+defined per match state of a Pfam model, the Pfam release must correspond to the one on
+which the SR models were trained. Pfam 31.0 is the only release whose model lengths
+agree with all positional SR models; this is asserted each time the reference is built.
+
+## Workflow
+
+```mermaid
+flowchart LR
+    subgraph ref["build_reference.py (once)"]
+        C[CisBP 3.10<br/>TFs, motifs, proteins] --> R[reference TFs<br/>DBD segments, one motif each]
+        P[Pfam 31.0] --> R
+        S[SR models] --> R
+    end
+    subgraph tgt["per organism"]
+        G[genome + GFF3<br/>or protein FASTA] --> T["call_tfs.py<br/>TF genes, families,<br/>DBD segments"]
+        T --> A["assign_motifs.py<br/>SR scores against all<br/>reference TFs of the family"]
+    end
+    R --> T
+    R --> A
+    A --> O[motifs.meme<br/>assignments.tsv]
 ```
-A  build_reference.py   CisBP 3.10 (TF table, PWMs, protein sequences) + Pfam 31.0 + SR
-                        -> reference/: reference TFs with SR-ready DBD segments and their PWMs
-B  call_tfs.py          genome + GFF3 (gffread) or protein FASTA -> proteins -> hmmscan
-                        -> target TFs with CisBP family and SR-ready DBD segments
-   assign_motifs.py     SR score of each target TF vs every reference TF of its family
-                        -> assignments.tsv + motifs.meme
-   check_sr_vs_cisbp.py optional: reproduce SR's own example and CisBP's own PWM copies
-```
 
-**What SR is.** For one DBD family (homeodomain, Zinc cluster, ...), CisBP aligned the
-DBDs of many pairs of TFs whose PWMs had been measured, position by position along the
-family's Pfam HMM. It then fitted a linear model (ridge regression with non-negative
-weights) that predicts from per-position identity (or BLOSUM62 similarity) whether two
-TFs bind the same DNA. The result is, in effect, *percent identity with learned weights
-per DBD position*, plus a family cutoff chosen for at least 75% precision on held-out
-data. CisBP uses exactly this, from build 2.00 on, to copy PWMs from reference TFs to TFs
-nobody has measured. SR's code and fitted models are public
-(github.com/smlmbrt/SimilarityRegression); this pipeline runs them unmodified.
+1. **Reference construction** (`build_reference.py`, performed once for all organisms).
+   CisBP 3.10, Pfam 31.0 and SR are downloaded. Every CisBP TF with an experimentally
+   determined motif becomes a reference TF: one protein isoform is selected, its DBDs
+   are detected and aligned to the Pfam models (the input representation required by
+   SR), and one of its motifs is designated for transfer.
+2. **TF identification** (`call_tfs.py`, per organism). Annotated coding sequences are
+   translated (or the supplied protein sequences are read), all proteins are scanned for
+   DBDs, and a gene is classified as a TF if it encodes a DBD passing the Pfam gathering
+   threshold. Each TF gene is represented by one protein and assigned the CisBP family
+   defined by its DBD types.
+3. **Motif assignment** (`assign_motifs.py`, per organism). Each TF is scored against
+   all reference TFs of its family with the corresponding SR model. If an HSim reference
+   TF with a motif exists, the motif of the highest-scoring one is assigned; otherwise
+   no motif is assigned.
+4. **Method verification** (`check_sr_vs_cisbp.py`, optional). The published SR example
+   is reproduced, and the pipeline's decisions are compared with CisBP's own inferences
+   for six fungal species.
 
-**The data flow.** SR compares two DBD sequences, so it needs the sequence of every
-reference TF. CisBP serves those (every listed isoform per TF) through its cart download,
-not its bulk downloads; `build_reference.py` fetches them in batches. Each reference TF
-gets one isoform, its DBDs cut out and aligned to Pfam 31.0 HMM match states (SR's input
-format), and one PWM. A target TF is scored against every reference TF of its CisBP
-family; if the best one clears the family's cutoff, its PWM is copied to the target TF.
+All external files are downloaded once into `data/raw/` and recorded with their SHA-256
+checksums. Each output directory contains a provenance record (code version, tool
+versions, input checksums and settings). A rerun from `data/raw/` reproduces all outputs
+byte for byte.
 
-## Quick start
+The decision rules (TF classification, isoform and motif selection) and their
+justification are documented in [scripts/README.md](scripts/README.md#method-rules).
+
+## Installation
+
+The pipeline was developed and tested on Linux. It requires
+[conda](https://docs.conda.io/) or [mamba](https://mamba.readthedocs.io/), as well as
+`curl` and `git`.
 
 ```bash
-mamba env create -f environment.yml
+git clone https://github.com/ajanowiak/igem-pwm-assignment.git
 ```
 
 ```bash
-conda activate cisbp-sr
+cd igem-pwm-assignment
 ```
 
 ```bash
-python build_reference.py
+mamba env create -y -f environment.yml
 ```
 
 ```bash
-python call_tfs.py --target tatroviride_p1.toml
+conda activate igem-pwm-assignment
+```
+
+The environment provides Python 3.12, HMMER 3.4, gffread 0.12, Biopython, pandas and
+numpy. JupyterLab and matplotlib are included for exploratory notebooks only.
+
+## Usage
+
+The complete pipeline is run with:
+
+```bash
+bash run_pipeline.sh
+```
+
+This builds the reference and processes every organism configured in `config/`
+(*T. atroviride* P1 and *Neurospora crassa* OR74A are provided). A single organism is
+processed by naming its configuration file; the option `--check` adds the comparison
+with CisBP's own inferences:
+
+```bash
+bash run_pipeline.sh tatroviride_p1.toml
 ```
 
 ```bash
-python assign_motifs.py --target tatroviride_p1.toml
+bash run_pipeline.sh --check
 ```
 
-```bash
-python check_sr_vs_cisbp.py
+The first run downloads approximately 290 MB (CisBP, Pfam, SR and the two example
+genomes); subsequent runs reuse these files. With all downloads present, a complete run
+including `--check` takes approximately three minutes on a desktop workstation. Progress
+is reported on standard output and written to `logs/`. The individual scripts and their
+options are described in [scripts/README.md](scripts/README.md).
+
+## Configuring a new organism
+
+A new organism is added by creating a configuration file in `config/`, based on one of
+the supplied examples:
+
+- `config/tatroviride_p1.toml`: genome and annotation from NCBI RefSeq
+- `config/ncrassa.toml`: genome and annotation from Ensembl Fungi
+
+```toml
+[organism]
+name = "Trichoderma atroviride"
+strain = "P1"
+label = "tatroviride_p1"          # name of the output directory results/<label>/
+
+[input]
+genome = "https://.../genomic.fna.gz"       # URL or local path, optionally gzipped
+annotation = "https://.../genomic.gff.gz"   # GFF3 with CDS features
+# alternatively, instead of genome and annotation:
+# proteins = "path/to/proteins.faa"
 ```
 
-`build_reference.py` runs once for all organisms (about 8 minutes, mostly the Pfam
-download). For another organism, copy `config/tatroviride_p1.toml` (RefSeq) or
-`config/ncrassa.toml` (Ensembl), set the label and either `genome` + `annotation` (GFF3)
-or `proteins`, as URLs or local paths.
+The organism is then processed with `bash run_pipeline.sh <file>.toml`.
 
-- With a GFF3, proteins are grouped into genes by their parent gene feature. If the
-  annotation has no gene features, each transcript counts as its own gene and
-  `call_tfs.py` prints a warning (isoforms of one gene may then be counted twice).
-- With a protein FASTA, each record is one gene; give one protein per gene if you can.
-- gffread translates with the standard genetic code, so mitochondrial proteins usually
-  show internal stops and are dropped (counted in the output). They are not TFs.
+- For genome and GFF3 input, proteins are translated with gffread and grouped into genes
+  by their parent gene feature. If the annotation contains no gene features, each
+  transcript is treated as a separate gene and a warning is logged, since isoforms of
+  one gene may then be counted more than once.
+- For protein FASTA input, each record is treated as one gene; one protein per gene
+  should therefore be supplied where possible.
+- Translation uses the standard genetic code. Mitochondrially encoded proteins therefore
+  usually contain internal stop codons; such proteins are excluded and their number is
+  recorded in the provenance file.
+
+Settings shared by all organisms (CisBP build, Pfam release, SR commit and thresholds)
+are pinned in `config/reference.toml` and are not intended to be changed. The one
+optional setting, `calling_i_evalue`, is described in
+[scripts/README.md](scripts/README.md#configuration).
 
 ## Outputs
 
-`reference/cisbp_3.10_pfam_31.0/` (shared by every organism):
+For each organism, `results/<label>/` contains:
 
 | file | content |
 |---|---|
-| `references.tsv` | one row per reference TF: family, the PWM that gets copied from it and that PWM's experiment and study, the CisBP isoform used, its SR segments; `outcome` says why a TF has no segments |
-| `motifs.meme` | every PWM named in `references.tsv` |
-| `families.tsv` | per CisBP family: DBD types, SR model file, cutoff |
-| `dbd_models.hmm`, `dbd_models.tsv` | the Pfam 31.0 models of CisBP's DBD types; which of them call TFs |
-| `proteins.fasta`, `sr/`, `provenance.json` | chosen reference isoforms; SR code; input hashes and tool versions |
+| `motifs.meme` | each assigned motif once; identifiers are CisBP motif IDs (e.g. `M01613_3.10`), and the alternative name on each `MOTIF` line is the reference TF from which the motif was transferred |
+| `assignments.tsv` | one row per TF gene: tier, motif, best reference TF with species and SR score, family cutoff and margin, runner-up reference TF, and the experiment and study in which the motif was determined |
+| `tf_calls.tsv` | one row per TF gene: representative protein, detected DBDs, CisBP family |
+| `dbd_hits.tsv` | all DBD hits reported by HMMER |
+| `provenance_*.json` | code version, tool versions, input checksums and settings of each step |
 
-`results/<label>/`:
+Each TF gene is assigned to exactly one tier:
 
-| file | content |
+| tier | definition |
 |---|---|
-| `motifs.meme` | each copied PWM once (id = CisBP motif id, alt name = the reference TF it came from). Uniform background; `nsites= 20` is a fixed weight, not a site count; `E= 0` is a placeholder |
-| `assignments.tsv` | one row per target TF gene: tier, reason, PWM, best reference TF and species, SR score, family cutoff, margin, runner-up, the PWM's source experiment |
-| `tf_calls.tsv`, `dbd_hits.tsv` | target TF genes with family and SR segments; every hmmscan domain hit |
-| `provenance_call_tfs.json`, `provenance_assign_motifs.json` | per step: code version, input SHA-256s, tool versions, settings used |
+| `pass` | at least one reference TF is HSim (SR score at or above the family cutoff) and has a motif; the motif of the highest-scoring such TF is assigned |
+| `below-threshold` | the TF was scored, but no reference TF reaches the cutoff; no motif is assigned |
+| `none` | the TF could not be scored (no CisBP family for its DBD combination, no reference TF in its family, or no usable DBD segment); no motif is assigned |
 
-Tiers: **pass** (a reference TF scores at or above the cutoff and has a PWM; that PWM is
-copied), **below-threshold** (scored, no reference TF qualifies; no PWM), **none**
-(nothing to score).
+The shared reference is written to `reference/cisbp_3.10_pfam_31.0/` and the method
+verification to `results/checks/sr_vs_cisbp/`. All columns are defined in
+[scripts/README.md](scripts/README.md#outputs).
 
-## Every rule, and why
+The motif file specifies a uniform background. Because CisBP provides probabilities
+rather than site counts, `nsites= 20` is a fixed weight and not a number of observed
+sites, and `E= 0` is a placeholder.
 
-| rule | why |
-|---|---|
-| CisBP 3.10 is the only source of PWMs, reference sequences, families and cutoffs | one curated, versioned source; the cutoffs are the ones CisBP calibrated with SR |
-| Pfam 31.0 | the only release whose model lengths equal the SR weight vectors of all 26 positional SR models; `build_reference.py` asserts it |
-| SR at commit `b4b27b3`, unmodified | two Python 3 shims only (`srmotifs/sr.py`); reproduces SR's saved example scores to 5e-7 |
-| A protein is a TF if a DBD hit passes Pfam's gathering threshold (GA) | Pfam's own curated per-model threshold, no tuned cutoff |
-| ... for DBD types CisBP itself uses to call TFs in ≥ 10 species | excludes exactly RRM_1 and zf-CCCH (mostly RNA-binding; 1 and 2 species in CisBP); all other types are in ≥ 22 |
-| Family = the CisBP family whose DBD types equal the protein's | CisBP's own family definitions |
-| SR segments: the family's DBD types at domain i-Evalue ≤ 1e-3, aligned with hmmalign | same rule for reference and target TFs; hmmalign plus SR's end placement gives the same match states as SR's own (aphid) alignments, 10/10 on SR's example |
-| Reference isoform: matches the family's DBD types, then most DBDs, longest, smallest id | CisBP lists isoforms without marking the one it scored |
-| One PWM per reference TF: the one CisBP itself copies to other TFs most often | a reference TF can have several lab-measured PWMs (different studies); this follows CisBP's own choice |
-| Threshold: CisBP's family cutoff, unchanged | no retuning; a below-threshold TF is *unknown*, not *different* |
+## Interpretation
 
-## Verified (2026-10-10)
+- **Assigned motifs are predictions.** Lambert et al. (2019) report a held-out precision
+  of approximately 0.8 for HSim pairs, with lower precision in some families, notably
+  Zinc cluster TFs.
+- **Confidence increases with the margin.** `margin` is the SR score minus the family
+  cutoff. In the method verification, agreement with CisBP is 47% for `pass` calls
+  within 0.025 of the cutoff and 100% for calls more than 0.2 above it.
+- **`below-threshold` indicates the absence of evidence,** not evidence of a distinct
+  specificity.
+- **Each motif is traceable to its source.** `best_reference_species` and the `motif_*`
+  columns give the organism of the reference TF and the experiment in which the motif
+  was determined.
+
+## Validation
+
+The following results were obtained with the current code on the stated datasets.
 
 *T. atroviride* P1 (NCBI RefSeq GCF_020647795.1):
-- gffread translations equal NCBI's own protein FASTA for 13,567 of 13,568 proteins.
-- 431 TF genes; 109 pass (101 distinct PWMs), 321 below-threshold, 1 none.
-- With the gene features removed from the GFF, the run warns and counts 457 TF
-  "genes" (one per transcript), the same as with NCBI's protein FASTA as input.
+- gffread translations are identical to the NCBI protein FASTA for 13,567 of 13,568
+  proteins.
+- 431 TF genes: 109 `pass` (101 distinct motifs), 321 `below-threshold`, 1 `none`.
 
-*N. crassa* OR74A (Ensembl Fungi 63), a species CisBP covers itself:
-- 231 TF genes, 228 of them in CisBP's own *N. crassa* TF list (290); the family agrees
-  for 224 of the 228. 22 proteins dropped for internal stops are all mitochondrial.
-- 125 of CisBP's 156 lab-measured *N. crassa* TFs are called; 121 of those get their own
-  measured PWM back (their best reference TF is themselves). Of the other 4, two are
-  reference TFs CisBP lists no protein for, and two get a different DBD combination
-  than CisBP records.
-- Against CisBP's own calls for these genes (I = CisBP copied a PWM to it, N = CisBP did
-  not): I → pass 10 of 12, N → no pass 87 of 91.
-- 61 of the 62 CisBP TFs not called have a DBD hit below Pfam's gathering threshold
-  (see Known limitations).
+*N. crassa* OR74A (Ensembl Fungi release 63), a species included in CisBP:
+- 231 TF genes, of which 228 are in CisBP's *N. crassa* TF list (290 TFs); the family
+  agrees for 224 of the 228.
+- 125 of the 156 *N. crassa* TFs with an experimentally determined motif in CisBP are
+  identified; for 121 of these, the best-scoring reference TF is the TF itself, so its
+  own motif is recovered.
+- All 22 proteins excluded for internal stop codons are mitochondrially encoded.
 
-Both organisms:
-- 4,745 of 4,817 CisBP reference TFs are usable (60 have no isoform with the family's DBD
-  types under the segment rule; for 12 CisBP lists no protein).
-- `check_sr_vs_cisbp.py`, on CisBP's own I/N calls for 6 fungi (1,318 TFs): CisBP I →
-  our pass 94.6%, CisBP N → our no pass 91.7%. Disagreements sit near the cutoff: our pass
-  calls agree with CisBP 47% within 0.025 of the cutoff and 100% beyond 0.2.
-
-## Assumed, not verified
-
-- That the isoform chosen for each reference TF is the one CisBP scored.
-- That CisBP's I/N labels reflect SR on today's reference set (disagreements cluster at
-  the cutoff, consistent with isoform or segment-boundary differences).
-- That a PWM copied by SR describes the target TF's binding. SR's own held-out precision
-  for HSim is about 0.8; it is weakest for Zinc-cluster TFs.
+Method verification (`check_sr_vs_cisbp.py`):
+- The published SR homeodomain example is reproduced: 55 pairwise scores agree to within
+  5e-7, with no classification differences, and 10 of 10 DBD alignments are identical
+  to those distributed with SR.
+- For 1,318 TFs of six fungal species, the pipeline assigns a motif to 94.6% of the TFs
+  for which CisBP infers one (n = 296), and assigns none to 91.7% of the TFs for which
+  CisBP infers none (n = 1,022). Disagreements are concentrated near the family cutoff.
 
 ## Known limitations
 
-- TF calling with Pfam's gathering threshold is stricter than CisBP's own TF calling.
-  On *N. crassa* it misses 62 of CisBP's 290 TFs (31 lab-measured); calling at the
-  segment rule's i-Evalue ≤ 1e-3 would find 282 of 290, with 36 calls CisBP lacks.
-- CisBP's protein table lacks 12 reference TFs whose PWMs CisBP itself copies to other TFs.
-- For C2H2 zinc-finger proteins, the segment rule often keeps fewer fingers than CisBP lists.
-- Fungal reference TFs are sparse: most copied PWMs come from *N. crassa*,
-  *A. nidulans*, *S. cerevisiae* and *F. graminearum*; most Zinc-cluster TFs get none.
+- **TF identification is more stringent than in CisBP.** A gene is classified as a TF
+  only if a DBD passes the Pfam gathering threshold. For *N. crassa*, 62 of the 290 TFs
+  listed by CisBP are not identified (31 of them with an experimentally determined
+  motif); 61 of these have a DBD hit below the gathering threshold. A less stringent
+  optional rule is available (`calling_i_evalue`).
+- **Isoform selection.** CisBP lists all isoforms of a reference TF without indicating
+  which one it scored. The pipeline selects one by a fixed rule, which may differ from
+  CisBP's choice.
+- **Missing reference sequences.** CisBP provides no protein sequence for 12 reference
+  TFs whose motifs it transfers to other TFs; these motifs cannot be transferred here.
+- **C2H2 zinc finger proteins.** The DBD segment rule frequently retains fewer zinc
+  fingers than CisBP lists.
+- **Sparse fungal reference data.** Most motifs transferred to fungal TFs originate from
+  *N. crassa*, *Aspergillus nidulans*, *Saccharomyces cerevisiae* and *Fusarium
+  graminearum*; most fungal Zinc cluster TFs are not assigned a motif.
 
-## Citation
+## Repository layout
 
-Lambert SA et al. (2019) Similarity regression predicts evolution of transcription factor
-sequence specificity. *Nature Genetics* 51:981–989.
-Weirauch MT et al. (2014) Determination and inference of eukaryotic transcription factor
-sequence specificity. *Cell* 158:1431–1443.
+```
+run_pipeline.sh          runs the complete pipeline
+environment.yml          conda environment
+config/                  reference.toml (pinned builds and rules); one .toml per organism
+scripts/                 pipeline scripts; see scripts/README.md
+scripts/srmotifs/        shared Python package; see scripts/srmotifs/README.md
+data/raw/                downloaded files, write-once, listed in data/raw/SOURCES.tsv   (generated)
+reference/               shared reference built from data/raw                         (generated)
+results/                 one directory per organism, and checks/                      (generated)
+logs/                    one log file per script run                                  (generated)
+```
+
+## References
+
+When using this software, please cite CisBP and Similarity Regression, whose data and
+method it applies:
+
+- Lambert SA, Yang AWH, Sasse A, Cowley G, Albu M, Caddick MX, Morris QD, Weirauch MT,
+  Hughes TR (2019). Similarity regression predicts evolution of transcription factor
+  sequence specificity. *Nature Genetics* 51:981–989.
+  [doi:10.1038/s41588-019-0411-1](https://doi.org/10.1038/s41588-019-0411-1)
+- Weirauch MT, Yang A, Albu M, et al. (2014). Determination and inference of eukaryotic
+  transcription factor sequence specificity. *Cell* 158:1431–1443.
+  [doi:10.1016/j.cell.2014.08.009](https://doi.org/10.1016/j.cell.2014.08.009)
+
+Software and databases used by the pipeline:
+
+- Mistry J, Chuguransky S, Williams L, et al. (2021). Pfam: The protein families
+  database in 2021. *Nucleic Acids Research* 49:D412–D419.
+  [doi:10.1093/nar/gkaa913](https://doi.org/10.1093/nar/gkaa913)
+- Eddy SR (2011). Accelerated profile HMM searches. *PLoS Computational Biology*
+  7:e1002195. [doi:10.1371/journal.pcbi.1002195](https://doi.org/10.1371/journal.pcbi.1002195)
+- Pertea G, Pertea M (2020). GFF Utilities: GffRead and GffCompare. *F1000Research*
+  9:304. [doi:10.12688/f1000research.23297.2](https://doi.org/10.12688/f1000research.23297.2)
+- Cock PJA, Antao T, Chang JT, et al. (2009). Biopython: freely available Python tools
+  for computational molecular biology and bioinformatics. *Bioinformatics* 25:1422–1423.
+  [doi:10.1093/bioinformatics/btp163](https://doi.org/10.1093/bioinformatics/btp163)
+
+## License
+
+This software is released under the GNU General Public License v3.0 (see
+[LICENSE](LICENSE)). SimilarityRegression, also licensed under GPL-3.0, is downloaded at
+a pinned commit and executed without modification. CisBP and Pfam data are downloaded
+from their providers at run time and are not redistributed in this repository; their
+respective terms of use apply.

@@ -1,5 +1,5 @@
 # Build with:  mamba env create -f environment.yml   (or conda)
-# Then:        conda activate cisbp-sr
+# Then:        conda activate igem-pwm-assignment
 #
 #   hmmer      hmmscan (DBD detection), hmmalign (match states for SR), hmmfetch/hmmpress
 #   gffread    translates CDS features of a genome + GFF3 annotation into proteins
@@ -8,7 +8,7 @@
 #   jupyterlab, matplotlib   only for the exploratory notebooks in notebooks/
 #
 # PYTHONNOUSERSITE stops ~/.local site-packages from shadowing the env's packages.
-name: cisbp-sr
+name: igem-pwm-assignment
 channels:
   - conda-forge
   - bioconda

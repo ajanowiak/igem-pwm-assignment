@@ -3,6 +3,7 @@
 import pandas as pd
 
 from srmotifs import hmmer
+from srmotifs.constants import DBD_MODELS_HMM, FAMILIES_TSV, REFERENCES_TSV
 
 
 def choose_isoform(keys, expected, found, counts, sequences):
@@ -77,9 +78,9 @@ def load(ref_dir):
     Returns (references table, families table, {model: (length, seq GA, dom GA)},
     {Family_ID: [(TF_ID, segments)]}, {TF_ID: Motif_ID}).
     """
-    references = pd.read_csv(ref_dir / "references.tsv", sep="\t", dtype=str, keep_default_na=False)
-    families = pd.read_csv(ref_dir / "families.tsv", sep="\t", dtype={"cutoff": float}).set_index("Family_ID")
-    models = hmmer.read_library(ref_dir / "dbd_models.hmm")
+    references = pd.read_csv(ref_dir / REFERENCES_TSV, sep="\t", dtype=str, keep_default_na=False)
+    families = pd.read_csv(ref_dir / FAMILIES_TSV, sep="\t", dtype={"cutoff": float}).set_index("Family_ID")
+    models = hmmer.read_library(ref_dir / DBD_MODELS_HMM)
 
     # only references with segments can be scored
     usable = references[references["segments"] != ""]

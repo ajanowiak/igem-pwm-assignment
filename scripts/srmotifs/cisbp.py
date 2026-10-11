@@ -1,6 +1,7 @@
 """Download CisBP and read its TF table, PWMs and protein sequences."""
 
 import io
+import logging
 import re
 import tempfile
 import zipfile
@@ -10,25 +11,24 @@ import numpy as np
 import pandas as pd
 
 from srmotifs import files
-
-TF_TABLE = "TF_Information.txt.zip"
-PWM_ARCHIVE = "PWMs.zip"
-PROTEIN_TABLE = "prot_seq.txt"
+from srmotifs.constants import CISBP_PROTEIN_TABLE, CISBP_PWM_ARCHIVE, CISBP_TF_TABLE, DATA_RAW
 
 # TFs without a recognised DNA-binding domain cannot be reached by DBD homology, so they
 # are never references or check targets
 UNREACHABLE_FAMILIES = {"Unknown"}
 
+logger = logging.getLogger(__name__)
+
 
 def raw_dir(config):
-    return files.DATA_RAW / f"cisbp_{config['cisbp']['build']}"
+    return DATA_RAW / f"cisbp_{config['cisbp']['build']}"
 
 
 def fetch_tables(config):
     """The TF table and the PWM archive, from CisBP's bulk downloads."""
     url = config["cisbp"]["bulk_url"]
-    tf_table = files.fetch(url + TF_TABLE, raw_dir(config) / TF_TABLE)
-    pwm_archive = files.fetch(url + PWM_ARCHIVE, raw_dir(config) / PWM_ARCHIVE)
+    tf_table = files.fetch(url + CISBP_TF_TABLE, raw_dir(config) / CISBP_TF_TABLE)
+    pwm_archive = files.fetch(url + CISBP_PWM_ARCHIVE, raw_dir(config) / CISBP_PWM_ARCHIVE)
     return tf_table, pwm_archive
 
 
@@ -47,6 +47,7 @@ def fetch_proteins(config, name, tf_ids):
     for number, batch in enumerate(batches, start=1):
         dest = raw_dir(config) / "proteins" / f"{name}_{number:02d}_of_{len(batches):02d}.zip"
         if not files.is_recorded(dest):
+            logger.info(f"requesting CisBP proteins, {name} batch {number} of {len(batches)}")
             download_protein_batch(config["cisbp"]["site_url"], batch, dest)
 
         listed = set(read_protein_table(dest)["TF_ID"])
@@ -146,7 +147,7 @@ def calling_dbd_types(tf_table, min_species):
 
 def read_protein_table(zip_path):
     with zipfile.ZipFile(zip_path) as archive:
-        with archive.open(PROTEIN_TABLE) as handle:
+        with archive.open(CISBP_PROTEIN_TABLE) as handle:
             return pd.read_csv(handle, sep="\t", dtype=str, keep_default_na=False)
 
 

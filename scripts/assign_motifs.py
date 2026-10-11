@@ -1,6 +1,8 @@
-"""Connect A and B: copy a CisBP PWM to each target TF gene by Similarity Regression, and write one MEME file.
+"""Copy a CisBP PWM to each target TF gene by Similarity Regression, and write one MEME file.
 
-Usage: python assign_motifs.py --target tatroviride_p1.toml
+Usage: python scripts/assign_motifs.py --target tatroviride_p1.toml [--log_path logs/assign_motifs/<label>.log]
+
+Needs the reference (build_reference.py) and the TF calls of the target (call_tfs.py).
 
 Each target TF's SR segments are scored against every usable reference TF (a CisBP TF
 with a lab-measured PWM) of the same CisBP family, with CisBP's SR model for that
@@ -17,15 +19,21 @@ Writes results/<label>/assignments.tsv (one row per target TF gene) and motifs.m
 """
 
 import argparse
+import logging
 
 import pandas as pd
 
 from srmotifs import files, meme, reference, sr
+from srmotifs.constants import (ASSIGNMENTS_TSV, FAMILIES_TSV, LOGS_DIR, MOTIF_SOURCE_COLUMNS, MOTIFS_MEME,
+                                REFERENCES_TSV, SR_DIR, SR_HSIM, TF_CALLS_TSV, TIER_NONE, TIER_PASS)
+from srmotifs.log import configure_logging
 
 COLUMNS = ["gene_id", "protein_id", "family_id", "family_name", "tier", "reason", "motif_id",
            "best_reference_tf", "best_reference_name", "best_reference_species", "sr_score", "cutoff", "margin",
            "sr_class", "pct_id", "n_segments", "n_references", "n_hsim", "runner_up_tf", "runner_up_score",
            "motif_experiment", "motif_study", "motif_year", "motif_pmid"]
+
+logger = logging.getLogger(__name__)
 
 
 def unscorable_reason(gene, references):
@@ -45,11 +53,11 @@ def assign_one(gene, references, cutoff, motif_of, scorer):
     tier, reason, best, runner_up = sr.decide(scores, motif_of)
 
     return {"tier": tier, "reason": reason,
-            "motif_id": motif_of[best["reference_tf"]] if tier == sr.TIER_PASS else "",
+            "motif_id": motif_of[best["reference_tf"]] if tier == TIER_PASS else "",
             "best_reference_tf": best["reference_tf"], "sr_score": best["sr_score"],
             "cutoff": cutoff, "margin": best["sr_score"] - cutoff,
             "sr_class": best["sr_class"], "pct_id": best["pct_id"],
-            "n_references": len(references), "n_hsim": int((scores["sr_class"] == "HSim").sum()),
+            "n_references": len(references), "n_hsim": int((scores["sr_class"] == SR_HSIM).sum()),
             "runner_up_tf": "" if runner_up is None else runner_up["reference_tf"],
             "runner_up_score": None if runner_up is None else runner_up["sr_score"]}
 
@@ -63,7 +71,7 @@ def assign(genes, by_family, families, motif_of, scorer):
 
         reason = unscorable_reason(gene, references)
         if reason:
-            row.update({"tier": sr.TIER_NONE, "reason": reason})
+            row.update({"tier": TIER_NONE, "reason": reason})
         else:
             cutoff = families.loc[gene.family_id, "cutoff"]
             row.update(assign_one(gene, references, cutoff, motif_of, scorer))
@@ -78,8 +86,8 @@ def add_reference_details(assignments, references):
     assignments["best_reference_name"] = assignments["best_reference_tf"].map(info["TF_Name"])
     assignments["best_reference_species"] = assignments["best_reference_tf"].map(info["TF_Species"])
 
-    passed = assignments["tier"] == sr.TIER_PASS
-    for column in ["motif_experiment", "motif_study", "motif_year", "motif_pmid"]:
+    passed = assignments["tier"] == TIER_PASS
+    for column in MOTIF_SOURCE_COLUMNS:
         assignments[column] = assignments["best_reference_tf"].map(info[column]).where(passed, "")
 
     return assignments.astype({"n_references": "Int64", "n_hsim": "Int64"})[COLUMNS]
@@ -90,51 +98,57 @@ def check_partition(assignments, genes):
     if sorted(assignments["gene_id"]) != sorted(genes["gene_id"]) or assignments["gene_id"].duplicated().any():
         raise AssertionError("tiers do not cover every TF gene exactly once")
 
-    scored = assignments["tier"] != sr.TIER_NONE
+    scored = assignments["tier"] != TIER_NONE
     if assignments.loc[scored, "sr_score"].isna().any():
         raise AssertionError("a scored TF lacks a numeric SR score")
 
     has_motif = assignments["motif_id"].fillna("") != ""
-    if not (has_motif == (assignments["tier"] == sr.TIER_PASS)).all():
+    if not (has_motif == (assignments["tier"] == TIER_PASS)).all():
         raise AssertionError("motifs must be given to exactly the pass tier")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--target", required=True, help="target config, a path or a file name in config/")
+    parser.add_argument("--log_path", default=None, help="default: logs/assign_motifs/<label>.log")
     args = parser.parse_args()
 
     config = files.reference_config()
     target = files.load_toml(args.target)
+    label = target["organism"]["label"]
+    configure_logging(args.log_path or LOGS_DIR / "assign_motifs" / f"{label}.log")
+    logger.info(f"assigning PWMs to the TFs of {target['organism']['name']} ({label})")
+
     ref_dir = files.reference_dir(config)
-    out = files.ROOT / "results" / target["organism"]["label"]
+    out = files.results_dir(label)
 
     # loading the reference, the TF calls and the SR models
     references, families, _, by_family, motif_of = reference.load(ref_dir)
-    genes = pd.read_csv(out / "tf_calls.tsv", sep="\t", dtype=str, keep_default_na=False)
+    genes = pd.read_csv(out / TF_CALLS_TSV, sep="\t", dtype=str, keep_default_na=False)
     genes["n_segments"] = genes["n_segments"].astype(int)
-    (sr_root,) = (ref_dir / "sr").iterdir()
+    (sr_root,) = (ref_dir / SR_DIR).iterdir()
     scorer = sr.Scorer(sr_root, sr.family_models(sr_root, families))
 
     # scoring every TF against its family's references
+    logger.info(f"scoring {len(genes)} TF genes against their families' reference TFs")
     assignments = assign(genes, by_family, families, motif_of, scorer)
     assignments = add_reference_details(assignments, references)
     check_partition(assignments, genes)
-    assignments.to_csv(out / "assignments.tsv", sep="\t", index=False)
+    assignments.to_csv(out / ASSIGNMENTS_TSV, sep="\t", index=False)
 
     # one MEME file with each copied PWM once
-    blocks = meme.read_blocks(ref_dir / "motifs.meme")
+    blocks = meme.read_blocks(ref_dir / MOTIFS_MEME)
     copied = sorted(set(assignments["motif_id"].dropna()) - {""})
-    meme.write(out / "motifs.meme", {motif_id: blocks[motif_id] for motif_id in copied})
+    meme.write(out / MOTIFS_MEME, {motif_id: blocks[motif_id] for motif_id in copied})
 
-    inputs = [out / "tf_calls.tsv", ref_dir / "references.tsv", ref_dir / "motifs.meme", ref_dir / "families.tsv"]
+    inputs = [out / TF_CALLS_TSV, ref_dir / REFERENCES_TSV, ref_dir / MOTIFS_MEME, ref_dir / FAMILIES_TSV]
     files.write_provenance(out, inputs, name="provenance_assign_motifs")
 
-    passed = assignments[assignments["tier"] == sr.TIER_PASS]
-    print(f"TF genes: {len(assignments)}; tiers: {assignments['tier'].value_counts().to_dict()}")
-    print(f"motifs.meme: {len(copied)} distinct PWMs for {len(passed)} TFs")
-    print("pass by family:", passed["family_name"].value_counts().to_dict())
-    print("source species:", passed["best_reference_species"].value_counts().to_dict())
+    passed = assignments[assignments["tier"] == TIER_PASS]
+    logger.info(f"TF genes: {len(assignments)}; tiers: {assignments['tier'].value_counts().to_dict()}")
+    logger.info(f"{MOTIFS_MEME}: {len(copied)} distinct PWMs for {len(passed)} TFs")
+    logger.info(f"pass by family: {passed['family_name'].value_counts().to_dict()}")
+    logger.info(f"source species: {passed['best_reference_species'].value_counts().to_dict()}")
 
 
 if __name__ == "__main__":

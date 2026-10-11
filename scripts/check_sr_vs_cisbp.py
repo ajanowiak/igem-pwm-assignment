@@ -1,6 +1,8 @@
 """Check that this pipeline reproduces SR and CisBP's own SR inferences.
 
-Usage: python check_sr_vs_cisbp.py
+Usage: python scripts/check_sr_vs_cisbp.py [--log_path logs/check_sr_vs_cisbp.log]
+
+Needs the reference built by build_reference.py. Optional: the pipeline does not use its output.
 
 1. SR's shipped example: the SR code, run here, gives the 55 pairwise scores saved in
    SR's example notebook, and hmmalign (with the semiglobal end placement in
@@ -16,16 +18,22 @@ that any inferred motif is biologically correct.
 Writes results/checks/sr_vs_cisbp/{summary.txt, comparison.tsv, agreement_by_margin.tsv}.
 """
 
+import argparse
 import json
+import logging
 import tempfile
 from pathlib import Path
 
 import pandas as pd
 
 from srmotifs import cisbp, files, hmmer, reference, sr
+from srmotifs.constants import (CHECKS_DIR, CISBP_TF_TABLE, DBD_MODELS_HMM, LOGS_DIR, SR_DIR, SR_HSIM,
+                                TIER_PASS)
+from srmotifs.log import configure_logging
 
-OUT = files.ROOT / "results" / "checks" / "sr_vs_cisbp"
 MARGIN_BINS = [0.0, 0.025, 0.05, 0.1, 0.2, float("inf")]
+
+logger = logging.getLogger(__name__)
 
 
 def shipped_matchpos(sr_root):
@@ -106,7 +114,7 @@ def score_targets(targets, resolved, by_family, motif_of, scorer):
         tier, _, best, _ = sr.decide(scores, motif_of)
 
         source = status.loc[row.TF_ID, "cisbp_source_tf"]
-        hsim = set(scores.loc[scores["sr_class"] == "HSim", "reference_tf"])
+        hsim = set(scores.loc[scores["sr_class"] == SR_HSIM, "reference_tf"])
         rows.append({"TF_ID": row.TF_ID, "TF_Species": row.TF_Species, "Family_Name": row.Family_Name,
                      "cisbp_status": status.loc[row.TF_ID, "TF_Status"], "cisbp_source_tf": source,
                      "cisbp_source_usable": source in {tf_id for tf_id, _ in references},
@@ -124,14 +132,14 @@ def summarise(table):
     lines = [pd.crosstab(table["cisbp_status"], table["our_tier"]).to_string()]
 
     if len(i_rows):
-        share = (i_rows["our_tier"] == sr.TIER_PASS).mean()
+        share = (i_rows["our_tier"] == TIER_PASS).mean()
         lines.append(f"CisBP I -> our pass: {share:.1%} of {len(i_rows)}")
     if len(n_rows):
-        share = (n_rows["our_tier"] != sr.TIER_PASS).mean()
+        share = (n_rows["our_tier"] != TIER_PASS).mean()
         lines.append(f"CisBP N -> our no pass: {share:.1%} of {len(n_rows)}")
 
     # where both infer a motif, do we pick CisBP's source TF?
-    both = i_rows[(i_rows["our_tier"] == sr.TIER_PASS) & i_rows["cisbp_source_usable"]]
+    both = i_rows[(i_rows["our_tier"] == TIER_PASS) & i_rows["cisbp_source_usable"]]
     if len(both):
         same_source = (both["our_best_tf"] == both["cisbp_source_tf"]).mean()
         lines.append(f"both pass, CisBP's source usable ({len(both)}): our best hit is CisBP's source "
@@ -141,7 +149,7 @@ def summarise(table):
 
 def agreement_by_margin(table, families):
     """Share of our pass calls that CisBP also infers (I), by SR score margin above the family cutoff."""
-    passed = table[table["our_tier"] == sr.TIER_PASS].copy()
+    passed = table[table["our_tier"] == TIER_PASS].copy()
     cutoff = families.set_index("Family_Name")["cutoff"]
     margin = passed["our_best_score"] - passed["Family_Name"].map(cutoff)
     passed["bin"] = pd.cut(margin, MARGIN_BINS, right=False)
@@ -157,7 +165,7 @@ def sr_example_lines(sr_root, ref_dir, models, config):
 
     with tempfile.TemporaryDirectory() as tmp:
         homeobox = Path(tmp) / "Homeobox.hmm"
-        homeobox.write_text(files.run(["hmmfetch", str(ref_dir / "dbd_models.hmm"), "Homeobox"]))
+        homeobox.write_text(files.run(["hmmfetch", str(ref_dir / DBD_MODELS_HMM), "Homeobox"]))
         same, total = check_match_states(homeobox, models["Homeobox"][0], sr_root)
 
     lines = ["== 1. SR's shipped example",
@@ -170,27 +178,34 @@ def sr_example_lines(sr_root, ref_dir, models, config):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--log_path", default=LOGS_DIR / "check_sr_vs_cisbp.log")
+    args = parser.parse_args()
+    configure_logging(args.log_path)
+
     config = files.reference_config()
     ref_dir = files.reference_dir(config)
-    OUT.mkdir(parents=True, exist_ok=True)
+    CHECKS_DIR.mkdir(parents=True, exist_ok=True)
     _, families, models, by_family, motif_of = reference.load(ref_dir)
-    (sr_root,) = (ref_dir / "sr").iterdir()
+    (sr_root,) = (ref_dir / SR_DIR).iterdir()
 
     # part 1: SR's own example
+    logger.info("reproducing SR's shipped example")
     lines, example_passed = sr_example_lines(sr_root, ref_dir, models, config)
 
     # part 2: resolving CisBP's I/N TFs like references, and scoring them
-    tf_table = cisbp.load_tf_table(cisbp.raw_dir(config) / cisbp.TF_TABLE)
+    logger.info("scoring CisBP's own I/N TFs of the check species")
+    tf_table = cisbp.load_tf_table(cisbp.raw_dir(config) / CISBP_TF_TABLE)
     targets = cisbp.check_targets(tf_table, config["check"]["species"])
     resolved, _ = reference.resolve_tfs(targets, cisbp.load_proteins(config), families,
-                                        ref_dir / "dbd_models.hmm", models,
+                                        ref_dir / DBD_MODELS_HMM, models,
                                         config["rules"]["segment_max_i_evalue"])
     scorer = sr.Scorer(sr_root, sr.family_models(sr_root, families))
     table = score_targets(targets, resolved, by_family, motif_of, scorer)
     agreement = agreement_by_margin(table, families.reset_index())
 
-    table.to_csv(OUT / "comparison.tsv", sep="\t", index=False)
-    agreement.to_csv(OUT / "agreement_by_margin.tsv", sep="\t")
+    table.to_csv(CHECKS_DIR / "comparison.tsv", sep="\t", index=False)
+    agreement.to_csv(CHECKS_DIR / "agreement_by_margin.tsv", sep="\t")
 
     # writing the summary, overall and per species
     lines += ["", "== 2. CisBP's own inferences",
@@ -201,10 +216,12 @@ def main():
     for species, group in table.groupby("TF_Species"):
         lines += ["", f"-- {species}", summarise(group)]
 
-    (OUT / "summary.txt").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines))
+    summary = "\n".join(lines)
+    (CHECKS_DIR / "summary.txt").write_text(summary + "\n")
+    logger.info(f"summary, also written to {CHECKS_DIR / 'summary.txt'}:\n{summary}")
     if not example_passed:
-        raise SystemExit("SR example check failed")
+        logger.error("SR example check failed")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

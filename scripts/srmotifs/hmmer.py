@@ -4,6 +4,7 @@ The same functions encode reference TFs and target TFs, so both sides of every S
 comparison are built identically.
 """
 
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -21,6 +22,8 @@ HIT_COLUMNS = ["protein", "model", "seq_score", "dom_score", "i_evalue", "ali_fr
 # one permissive hmmscan pass reports every hit; the calling rule (Pfam GA) and the
 # segment rule (i-Evalue) are filters applied to it afterwards
 REPORTING_EVALUE = "1"
+
+logger = logging.getLogger(__name__)
 
 
 def write_fasta(sequences, path):
@@ -57,6 +60,7 @@ def read_library(path):
 
 def scan(library, sequences):
     """hmmscan {protein id: sequence} against the library; one row per reported domain hit."""
+    logger.info(f"hmmscan: {len(sequences)} proteins against {Path(library).name}")
     with tempfile.TemporaryDirectory() as tmp:
         fasta = Path(tmp) / "proteins.fa"
         domtbl = Path(tmp) / "hits.domtbl"

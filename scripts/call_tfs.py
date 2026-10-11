@@ -1,6 +1,8 @@
-"""Step B: find the transcription factors (TFs) in a proteome.
+"""Find the transcription factors (TFs) in a proteome.
 
-Usage: python call_tfs.py --target tatroviride_p1.toml
+Usage: python scripts/call_tfs.py --target tatroviride_p1.toml [--log_path logs/call_tfs/<label>.log]
+
+Needs the reference built by build_reference.py.
 
 What it does, in order:
 1. reads the proteins: translated from genome + GFF3 with gffread, or read from a
@@ -23,13 +25,19 @@ hmmscan reported, for inspection).
 """
 
 import argparse
+import logging
 
 import pandas as pd
 
 from srmotifs import files, hmmer, proteome, reference
+from srmotifs.constants import (DBD_HITS_TSV, DBD_MODELS_HMM, DBD_MODELS_TSV, FAMILIES_TSV, LOGS_DIR,
+                                TF_CALLS_TSV)
+from srmotifs.log import configure_logging
 
 COLUMNS = ["gene_id", "protein_id", "n_dbd_isoforms", "protein_length", "n_dbds", "architecture",
            "dbd_types", "family_id", "family_name", "n_segments", "segments"]
+
+logger = logging.getLogger(__name__)
 
 
 def call_domains(hits, models, calling_types, proteins, calling_i_evalue):
@@ -91,7 +99,7 @@ def add_segments(genes, hits, sequences, families, ref_dir, models, max_i_evalue
                    for gene in genes.itertuples() if gene.family_id}
 
     domains = hmmer.segment_hits(hits[hits["protein"].isin(family_dbds)], family_dbds, max_i_evalue)
-    segment_map = hmmer.segments(sequences, domains, family_dbds, ref_dir / "dbd_models.hmm", models)
+    segment_map = hmmer.segments(sequences, domains, family_dbds, ref_dir / DBD_MODELS_HMM, models)
 
     genes["n_segments"] = [len(segment_map.get(protein, [])) for protein in genes["protein_id"]]
     genes["segments"] = [",".join(segment_map.get(protein, [])) for protein in genes["protein_id"]]
@@ -99,41 +107,48 @@ def add_segments(genes, hits, sequences, families, ref_dir, models, max_i_evalue
 
 
 def report(genes, notes):
-    print(f"proteins: {notes['proteins']} ({notes['genes']} genes; dropped for an internal stop: "
-          f"{notes['dropped_internal_stop']})")
+    logger.info(f"proteins: {notes['proteins']} ({notes['genes']} genes; dropped for an internal stop: "
+                f"{notes['dropped_internal_stop']})")
     if notes["proteins_without_gene_id"]:
-        print(f"WARNING: {notes['proteins_without_gene_id']} proteins have no gene id and are each "
-              "counted as their own gene; isoforms of one gene may be counted twice")
+        logger.warning(f"{notes['proteins_without_gene_id']} proteins have no gene id and are each "
+                       "counted as their own gene; isoforms of one gene may be counted twice")
 
     no_family = genes["family_id"] == ""
     no_segment = ~no_family & (genes["n_segments"] == 0)
-    print(f"TF genes: {len(genes)}; with more than one DBD: {int((genes['n_dbds'] > 1).sum())}; "
-          f"no CisBP family for their DBD types: {int(no_family.sum())}; "
-          f"family but no segment at the segment threshold: {int(no_segment.sum())}")
-    print(genes["family_name"].replace("", "<no family>").value_counts().head(15).to_string())
+    logger.info(f"TF genes: {len(genes)}; with more than one DBD: {int((genes['n_dbds'] > 1).sum())}; "
+                f"no CisBP family for their DBD types: {int(no_family.sum())}; "
+                f"family but no segment at the segment threshold: {int(no_segment.sum())}")
+
+    top_families = genes["family_name"].replace("", "<no family>").value_counts().head(15)
+    logger.info(f"TF genes per family (top 15):\n{top_families.to_string()}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--target", required=True, help="target config, a path or a file name in config/")
+    parser.add_argument("--log_path", default=None, help="default: logs/call_tfs/<label>.log")
     args = parser.parse_args()
 
     config = files.reference_config()
     target = files.load_toml(args.target)
+    label = target["organism"]["label"]
+    configure_logging(args.log_path or LOGS_DIR / "call_tfs" / f"{label}.log")
+    logger.info(f"calling TFs of {target['organism']['name']} ({label})")
+
     ref_dir = files.reference_dir(config)
-    out = files.ROOT / "results" / target["organism"]["label"]
+    out = files.results_dir(label)
     out.mkdir(parents=True, exist_ok=True)
 
     # loading the reference and the target proteome
     _, families, models, _, _ = reference.load(ref_dir)
-    dbd_table = pd.read_csv(ref_dir / "dbd_models.tsv", sep="\t")
+    dbd_table = pd.read_csv(ref_dir / DBD_MODELS_TSV, sep="\t")
     calling_types = set(dbd_table.loc[dbd_table["calls_tfs"], "model"])
     proteins, inputs, notes = proteome.load(target)
     sequences = proteins.set_index("protein_id")["sequence"].to_dict()
 
     # calling DNA-binding domain hits
-    hits = hmmer.scan(ref_dir / "dbd_models.hmm", sequences)
-    hits.to_csv(out / "dbd_hits.tsv", sep="\t", index=False)
+    hits = hmmer.scan(ref_dir / DBD_MODELS_HMM, sequences)
+    hits.to_csv(out / DBD_HITS_TSV, sep="\t", index=False)
     calling_i_evalue = config["rules"]["calling_i_evalue"]
     called = call_domains(hits, models, calling_types, proteins, calling_i_evalue)
 
@@ -143,8 +158,8 @@ def main():
     genes = add_segments(genes, hits, sequences, families, ref_dir, models,
                          config["rules"]["segment_max_i_evalue"])
 
-    genes[COLUMNS].to_csv(out / "tf_calls.tsv", sep="\t", index=False)
-    files.write_provenance(out, inputs + [ref_dir / "dbd_models.hmm", ref_dir / "families.tsv"],
+    genes[COLUMNS].to_csv(out / TF_CALLS_TSV, sep="\t", index=False)
+    files.write_provenance(out, inputs + [ref_dir / DBD_MODELS_HMM, ref_dir / FAMILIES_TSV],
                            name="provenance_call_tfs", proteome=notes, calling_i_evalue=calling_i_evalue)
     report(genes, notes)
 

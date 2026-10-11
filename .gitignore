@@ -1,0 +1,6 @@
+data/raw/
+reference/
+results/
+__pycache__/
+*.part
+notebooks/

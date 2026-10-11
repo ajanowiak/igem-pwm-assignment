@@ -1,0 +1,25 @@
+# Build with:  mamba env create -f environment.yml   (or conda)
+# Then:        conda activate cisbp-sr
+#
+#   hmmer      hmmscan (DBD detection), hmmalign (match states for SR), hmmfetch/hmmpress
+#   gffread    translates CDS features of a genome + GFF3 annotation into proteins
+#   biopython  BLOSUM62 for the SimilarityRegression scoring code
+#   pandas, numpy
+#   jupyterlab, matplotlib   only for the exploratory notebooks in notebooks/
+#
+# PYTHONNOUSERSITE stops ~/.local site-packages from shadowing the env's packages.
+name: cisbp-sr
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - hmmer=3.4
+  - gffread=0.12
+  - biopython
+  - pandas
+  - numpy
+  - jupyterlab
+  - matplotlib
+variables:
+  PYTHONNOUSERSITE: "1"

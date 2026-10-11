@@ -1,0 +1,41 @@
+# Pinned reference build shared by every organism. Changing anything here changes
+# every result; bump deliberately and rebuild the reference.
+
+[cisbp]
+build = "3.10"
+bulk_url = "https://cisbp.ccbr.utoronto.ca/data/3_10/DataFiles/Bulk_downloads/EntireDataset/"
+# Protein sequences are not in the bulk downloads. CisBP's cart download form posts TF
+# ids to archive.php, whose zip holds prot_seq.txt (every listed isoform of each TF).
+site_url = "https://cisbp.ccbr.utoronto.ca/"
+protein_batch_size = 1000
+
+[pfam]
+# Pfam 31.0 is the only release whose model lengths equal the SR weight-vector lengths
+# for all 26 families that ship positional SR models.
+release = "31.0"
+hmm_url = "https://ftp.ebi.ac.uk/pub/databases/Pfam/releases/Pfam31.0/Pfam-A.hmm.gz"
+
+[similarity_regression]
+commit = "b4b27b313ba275cc405b50e63a89fbc6d2698cac"
+tarball_url = "https://codeload.github.com/smlmbrt/SimilarityRegression/tar.gz/{commit}"
+
+[rules]
+# A DBD type calls TFs only if CisBP itself annotates TFs carrying it in at least this
+# many species. In CisBP 3.10 this excludes exactly RRM_1 (1 species) and zf-CCCH (2);
+# every other DBD type appears in 22 or more species.
+min_cisbp_species = 10
+# A protein is a TF if a DBD hit passes Pfam's gathering threshold (GA). Above 0, genes
+# with no GA hit may also be called from hits with i-Evalue at or below this value
+# (genes GA calls are never changed). 0 = GA only: the conservative default, chosen
+# 2026-10-11 because false motifs cost more downstream than missed TFs. On N. crassa,
+# 1e-5 adds 27 TFs (17 of them measured TFs that recover their own motif).
+calling_i_evalue = 0
+# Once a protein's family is known, its SR segments are the hits of the family's own
+# DBD types with independent E-value at or below this, for references and targets alike.
+segment_max_i_evalue = 1e-3
+
+[check]
+# Species whose CisBP I/N calls check_sr_vs_cisbp.py reproduces. Their protein
+# sequences are fetched together with the references'.
+species = ["Neurospora_crassa", "Aspergillus_nidulans", "Saccharomyces_cerevisiae",
+           "Schizosaccharomyces_pombe", "Aspergillus_oryzae", "Botrytis_cinerea"]

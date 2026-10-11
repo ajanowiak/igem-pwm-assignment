@@ -1,0 +1,13 @@
+# Trichoderma atroviride strain P1, NCBI RefSeq GCF_020647795.1
+
+[organism]
+name = "Trichoderma atroviride"
+strain = "P1"
+label = "tatroviride_p1"
+
+# Either `genome` + `annotation` (GFF3; proteins are translated with gffread, one gene
+# per GFF gene) or `proteins` (a protein FASTA; each record is treated as one gene).
+# Values may be URLs (fetched once into data/raw) or local paths.
+[input]
+genome = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/020/647/795/GCF_020647795.1_ASM2064779v1/GCF_020647795.1_ASM2064779v1_genomic.fna.gz"
+annotation = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/020/647/795/GCF_020647795.1_ASM2064779v1/GCF_020647795.1_ASM2064779v1_genomic.gff.gz"

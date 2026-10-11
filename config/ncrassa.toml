@@ -1,0 +1,12 @@
+# Neurospora crassa OR74A (assembly NC12), Ensembl Fungi release 63. A second test
+# organism: different annotation source than RefSeq, and CisBP holds directly measured
+# motifs for 156 of its TFs.
+
+[organism]
+name = "Neurospora crassa"
+strain = "OR74A"
+label = "ncrassa"
+
+[input]
+genome = "https://ftp.ensemblgenomes.ebi.ac.uk/pub/fungi/release-63/fasta/neurospora_crassa/dna/Neurospora_crassa.NC12.dna.toplevel.fa.gz"
+annotation = "https://ftp.ensemblgenomes.ebi.ac.uk/pub/fungi/release-63/gff3/neurospora_crassa/Neurospora_crassa.NC12.63.gff3.gz"

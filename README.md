@@ -253,13 +253,20 @@ verification to `results/checks/sr_vs_cisbp/`. All columns are defined in
 
 The motif file specifies a uniform background. Because CisBP provides probabilities
 rather than site counts, `nsites= 20` is a fixed weight and not a number of observed
-sites, and `E= 0` is a placeholder.
+sites, and `E= 0` is a placeholder. The value 20 is a convention, not derived from the
+data. MEME-suite tools use `nsites` only to weight their pseudocount against the
+probabilities (FIMO: `--motif-pseudo`, default 0.1). With 20, scores of good matches are
+nearly unchanged, while mismatches at positions with probability near 0 are penalised
+less than with a large `nsites`.
 
 ## Interpretation
 
 - **Assigned motifs are predictions.** Lambert et al. (2019) report a held-out precision
   of approximately 0.8 for HSim pairs, with lower precision in some families, notably
-  Zinc cluster TFs.
+  Zinc cluster TFs. This is a per-pair figure. A target TF passes if any reference TF
+  of its family is HSim, as in CisBP's own inference, so the precision per target TF
+  may be lower in families with many reference TFs (`n_references` in
+  `assignments.tsv`).
 - **Confidence increases with the margin.** `margin` is the SR score minus the family
   cutoff. In the method verification, agreement with CisBP is 47% for `pass` calls
   within 0.025 of the cutoff and 100% for calls more than 0.2 above it.
